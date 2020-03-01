@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: MySql Sample Function
+Parameters:
+  MysqlSamplePackage:
+    Type: String
+    Description: The Name of the Lambda Package used in the Analytics Function
+
+  OneCloudDbStack:
+    Type: String
+    Description: The name of the DB Stack which provides Database services to this application
+
+  OneCloudVpcStack:
+    Type: String
+    Description: The name of the VPC Stack which provides network services to this application
+
+  LogGroupRetentionDays:
+    Type: Number
+    Description: The retention days setting for CloudWatch Log Groups
+    Default: 1
+
+Resources:
+  MysqlSampleFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Sub 'swann-lambda-repository-${AWS::Region}'
+        S3Key: !Ref MysqlSamplePackage
+      Handler: handler.lambda_handler
+      Role: !GetAtt MySqlSampleFunctionRole.Arn
+      Timeout: 30
+      Runtime: python3.6
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub '${OneCloudDbStack}-DBClusterSecurityGroupId'
+        SubnetIds:
+          - Fn::ImportValue: !Sub '${OneCloudVpcStack}-Private0'
+          - Fn::ImportValue: !Sub '${OneCloudVpcStack}-Private1'
+      Environment:
+        Variables:
+          RESS_DB_USER: !Sub '{{resolve:ssm:/ONECLOUD/DEVICE_DB/USER:1}}'
+          RESS_DB_PSWD: !Sub '{{resolve:ssm:/ONECLOUD/DEVICE_DB/PASSWORD:1}}'
+          RESS_DB_READ_ENDPOINT:
+            Fn::ImportValue: !Sub '${OneCloudDbStack}-DBClusterReadEndpoint'
+          RESS_DB_ENDPOINT:
+            Fn::ImportValue: !Sub '${OneCloudDbStack}-DBClusterEndpoint'
+
+  MySqlSampleFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+  MySqlSampleFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DependsOn: MysqlSampleFunction
+    Properties:
+      RetentionInDays: !Ref LogGroupRetentionDays
+      LogGroupName: !Sub '/aws/lambda/${MysqlSampleFunction}'
+
+  MySqlSampleFunctionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "ScheduledRule for mysql sample function"
+      ScheduleExpression: "rate(5 minutes)"
+      State: "ENABLED"
+      Targets:
+        -
+          Arn: !GetAtt MysqlSampleFunction.Arn
+          Id: "MysqlSampleFunctionScheduler"
+
+  PermissionForEventsToInvokeMySqlSampleFunction:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MysqlSampleFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt MySqlSampleFunctionRule.Arn
+
+Outputs:
+  MysqlSampleFunction:
+    Description: The Id of the MySql Sample lambda function
+    Value: !Ref MysqlSampleFunction
+    Export:
+      Name: !Sub '${AWS::StackName}-MysqlSampleFunction'
